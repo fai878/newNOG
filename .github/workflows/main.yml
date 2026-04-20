@@ -3,30 +3,61 @@ name: Windows RDP
 on: [push]
 
 jobs:
-  build:
+  rdp:
     runs-on: windows-latest
-    timeout-minutes: 360  # 6 hours max
+    timeout-minutes: 360
 
     steps:
-      - name: Download ngrok
-        run: |
-          Invoke-WebRequest https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip -OutFile ngrok.zip
-          Expand-Archive ngrok.zip
-          .\ngrok\ngrok.exe authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
-
       - name: Enable RDP
         run: |
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -Value 0
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -Value 1
-          Set-LocalUser -Name "runneradmin" -Password (ConvertTo-SecureString -AsPlainText "YourPassword123!" -Force)
+          Set-LocalUser -Name "runneradmin" -Password (ConvertTo-SecureString -AsPlainText "Pass@12345!" -Force)
 
-      - name: Start ngrok tunnel
+      - name: Download & Setup ngrok
         run: |
-          .\ngrok\ngrok.exe tcp 3389 &
-          Start-Sleep -Seconds 5
-          $tunnel = Invoke-RestMethod http://localhost:4040/api/tunnels
-          Write-Host "RDP Address: $($tunnel.tunnels[0].public_url)"
+          Invoke-WebRequest https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip -OutFile ngrok.zip
+          Expand-Archive ngrok.zip -DestinationPath ngrok
+          .\ngrok\ngrok.exe authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
 
-      - name: Keep alive
-        run: Start-Sleep -Seconds 21600
+      - name: Start ngrok and Get URL
+        run: |
+          Start-Process -FilePath ".\ngrok\ngrok.exe" -ArgumentList "tcp 3389" -WindowStyle Hidden
+          
+          # Wait for ngrok to fully start (up to 30 seconds)
+          $maxWait = 30
+          $waited = 0
+          $url = $null
+          
+          while ($waited -lt $maxWait) {
+            Start-Sleep -Seconds 3
+            $waited += 3
+            try {
+              $response = Invoke-RestMethod -Uri "http://localhost:4040/api/tunnels" -ErrorAction Stop
+              if ($response.tunnels.Count -gt 0) {
+                $url = $response.tunnels[0].public_url
+                break
+              }
+            } catch {
+              Write-Host "Waiting for ngrok... ($waited seconds)"
+            }
+          }
+          
+          if ($url) {
+            Write-Host "============================================"
+            Write-Host "RDP ADDRESS: $url" -ForegroundColor Green
+            Write-Host "USERNAME: runneradmin"
+            Write-Host "PASSWORD: Pass@12345!"
+            Write-Host "============================================"
+            # Extract host and port
+            $parts = $url -replace "tcp://", "" -split ":"
+            Write-Host "Host: $($parts[0])"
+            Write-Host "Port: $($parts[1])"
+          } else {
+            Write-Host "ERROR: ngrok failed to start after $maxWait seconds"
+            exit 1
+          }
+
+      - name: Keep Alive
+        run: Start-Sleep -Seconds 21000
